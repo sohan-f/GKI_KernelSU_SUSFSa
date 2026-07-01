@@ -1,40 +1,41 @@
-name: Setup Wild KSU
-description: Download and configure Wild KSU with version tracking
+name: Setup KernelSU
+description: Download and configure KernelSU with version tracking
 inputs:
   ksu_branch:
-    description: 'KernelSU branch or commit (empty = latest dev-susfs branch tip)'
+    description: 'KernelSU branch or commit (empty = latest main branch tip)'
     required: false
     default: ""
 
 runs:
   using: composite
   steps:
-    - name: Download Wild KSU
+    - name: Download KernelSU
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
       run: |
         set -euo pipefail
 
-        KSU_REPO="https://github.com/pershoot/KernelSU-Next.git"
+        KSU_REPO="https://github.com/tiann/KernelSU.git"
         KSU_INPUT="${{ inputs.ksu_branch }}"
         if [ -z "$KSU_INPUT" ]; then
-          KSU_INPUT="dev-susfs"
+          KSU_INPUT="main"
         fi
 
         # Try as branch first, fall back to commit
         if git ls-remote --heads "$KSU_REPO" "$KSU_INPUT" | grep -q .; then
-          echo "Using KernelSU-Next branch: $KSU_INPUT"
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          git -C KernelSU-Next/kernel fetch --depth=50 origin "$KSU_INPUT"
-          git -C KernelSU-Next/kernel checkout "origin/$KSU_INPUT"
+          echo "Using KernelSU branch: $KSU_INPUT"
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/$KSU_INPUT/kernel/setup.sh" | bash -s $KSU_INPUT
+          git -C KernelSU/kernel fetch --depth=50 origin "$KSU_INPUT"
+          git -C KernelSU/kernel checkout "origin/$KSU_INPUT"
         else
-          echo "Using KernelSU-Next commit: $KSU_INPUT"
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          git -C KernelSU-Next/kernel fetch --depth=50 origin "$KSU_INPUT"
-          git -C KernelSU-Next/kernel checkout "$KSU_INPUT"
+          echo "Using KernelSU commit: $KSU_INPUT"
+          # Use raw URL with commit ref when available; allow curl to fail gracefully
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/$KSU_INPUT/kernel/setup.sh" | bash -s $KSU_INPUT || true
+          git -C KernelSU/kernel fetch --depth=50 origin "$KSU_INPUT" || git -C KernelSU/kernel fetch origin "$KSU_INPUT"
+          git -C KernelSU/kernel checkout "$KSU_INPUT"
         fi
 
-        cd KernelSU-Next/kernel
+        cd KernelSU/kernel
         
         COMMITS_COUNT=$(/usr/bin/git rev-list --count HEAD)
         BASE_VERSION=30000
@@ -47,27 +48,41 @@ runs:
     - name: Extract KSU Version Info
       id: ksu-version
       shell: bash
-      working-directory: ${{ github.workspace }}/kernel/KernelSU-Next
+      working-directory: ${{ github.workspace }}/kernel/KernelSU
       run: |
-        # Fetch dev branch for version info (tags, commits, etc.)
-        git fetch --depth=50 origin dev 2>/dev/null || true
+        set -euo pipefail
+
+        FETCH_REF="${{ inputs.ksu_branch }}"
+        if [ -z "$FETCH_REF" ]; then
+          FETCH_REF="main"
+        fi
+
+        # Fetch the chosen ref for version info (tags, commits, etc.)
+        git fetch --depth=50 origin "$FETCH_REF" 2>/dev/null || true
         
-        # Extract and export KSU version info from dev branch
-        KSU_GIT_VERSION=$(git rev-list --count origin/dev 2>/dev/null)
-        KSU_GIT_TAG=$(git describe --tags --abbrev=0 origin/dev 2>/dev/null || echo "")
-        KSU_COMMIT=$(git rev-parse --short origin/dev 2>/dev/null)
+        # Extract and export KSU version info from the fetched ref (fall back to HEAD)
+        if git rev-parse --verify --quiet "origin/$FETCH_REF" >/dev/null 2>&1; then
+          KSU_GIT_VERSION=$(git rev-list --count "origin/$FETCH_REF" 2>/dev/null || echo "0")
+          KSU_GIT_TAG=$(git describe --tags --abbrev=0 "origin/$FETCH_REF" 2>/dev/null || echo "")
+          KSU_COMMIT=$(git rev-parse --short "origin/$FETCH_REF" 2>/dev/null || echo "")
+        else
+          KSU_GIT_VERSION=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+          KSU_GIT_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
+          KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+        fi
+        
         KSU_VERSION=$((30000 + KSU_GIT_VERSION))
         
         echo "KSU_GIT_TAG=$KSU_GIT_TAG" >> $GITHUB_ENV
         echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
         echo "KSU_COMMIT=$KSU_COMMIT" >> $GITHUB_ENV
 
-    - name: 'Fix KernelSU-Next'
+    - name: 'Fix KernelSU'
       shell: bash
-      working-directory: ${{ github.workspace }}/kernel/KernelSU-Next
+      working-directory: ${{ github.workspace }}/kernel/KernelSU
       run: |
         set -euo pipefail
-        cp ${{ github.action_path }}/patches/static.patch "${{ github.workspace }}/kernel/KernelSU-Next/static.patch"
+        cp ${{ github.action_path }}/patches/static.patch "${{ github.workspace }}/kernel/KernelSU/static.patch"
         patch -p1 < static.patch
 
     - name: Enable Kernel Configs
